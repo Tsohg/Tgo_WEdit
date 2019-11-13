@@ -27,8 +27,6 @@ namespace Tgo_WEdit
         private string uid;
         private string pass;
 
-        private TgoTileData clipboard;
-
         public override string Author => "Tsohg";
         public override string Name => "TGO_WEdit";
         public override string Description => "Used in conjunction with TGO_Req for TGO button commands related to World Editing.";
@@ -59,9 +57,12 @@ namespace Tgo_WEdit
                 //Register all commands with TShock to be able to pull method calls into Tgo_Requests
                 Command c = new Command("TGO.Point1", Point1, "Point1", "point1", "p1");
                 Commands.ChatCommands.Add(c);
+
                 Commands.ChatCommands.Add(new Command("TGO.Point2", Point2, "Point2", "point2", "p2"));
                 Commands.ChatCommands.Add(new Command("TGO.Cut", Cut, "Cut", "cut"));
-                TShock.Log.ConsoleInfo("Commands loaded. Example: " + c.Name);
+                //Commands.ChatCommands.Add(new Command("TGO.Paste", Paste, "Paste", "paste"));
+                //Commands.ChatCommands.Add(new Command("TGO.Undo", Undo, "Undo", "undo"));
+                //TShock.Log.ConsoleInfo("Commands loaded. Example: " + c.Name);
             }
             catch (Exception e)
             {
@@ -94,7 +95,7 @@ namespace Tgo_WEdit
         private void GetPoint(object sender, GetDataHandlers.TileEditEventArgs e)
         {
             gArgs.Player.TempPoints[point] = new Point(e.X, e.Y);
-            gArgs.Player.SendSuccessMessage(point.ToString());
+            gArgs.Player.SendSuccessMessage(gArgs.Player.TempPoints[point].X + ", " + gArgs.Player.TempPoints[point].Y.ToString());
             GetDataHandlers.TileEdit -= GetPoint;
             timeout.Stop();
             //replace tile that was changed
@@ -138,13 +139,13 @@ namespace Tgo_WEdit
         /// <returns></returns>
         private bool PointCheck(CommandArgs args)
         {
-            if (args.Player.TempPoints[0] == null)
+            if (args.Player.TempPoints[0].X == -1 || args.Player.TempPoints[0].Y == -1)
             {
                 args.Player.SendErrorMessage("You must select a point 1.");
                 return false;
             }
 
-            if (args.Player.TempPoints[1] == null)
+            if (args.Player.TempPoints[1].X == -1 || args.Player.TempPoints[1].Y == -1)
             {
                 args.Player.SendErrorMessage("You must select a point 2.");
                 return false;
@@ -157,13 +158,57 @@ namespace Tgo_WEdit
         {
             if (PointCheck(args))
             {
-                (Point, Point) pts = CorrectPoints(args);
+                Tuple<Point, Point> pts = CorrectPoints(args);
+                args.Player.TempPoints[0] = pts.Item1;
+                args.Player.TempPoints[1] = pts.Item2;
+
                 //data collection. Reconstruct the tild id list *BEFORE* we act.
-                clipboard = new TgoTileData(pts.Item1, pts.Item2, TgoTileData.TgoAction.cut, DateTime.Now);
-                //perform command
+                TgoTileData ttd = new TgoTileData(pts.Item1, pts.Item2, TgoTileData.TgoAction.cut, DateTime.Now);
+                InsertTgoTileData(ttd, args); //!! Bugged at the moment.
+
+                //perform command. This loop will be the standard loop we use throughout app.
+                //args.Player.SendInfoMessage((args.Player.TempPoints[0].X < args.Player.TempPoints[1].X).ToString());
+                for (int x = ttd.p1.X; x <= ttd.p2.X; x++)
+                {
+                    //args.Player.SendInfoMessage((args.Player.TempPoints[0].Y < args.Player.TempPoints[1].Y).ToString());
+                    for (int y = ttd.p2.Y; y <= ttd.p1.Y; y++)
+                    {
+                        Main.tile[x, y].active(false);
+                        TSPlayer.All.SendTileSquare(x, y);
+                        args.Player.SendTileSquare(x, y);
+                    }
+                }
+
+                //null out points
+                args.Player.TempPoints[0] = new Point(-1, -1);
+                args.Player.TempPoints[1] = new Point(-1, -1);
+
+                args.Player.SendSuccessMessage("Area successfully cut.");
+            }
+            else args.Player.SendErrorMessage("You have not set both points.");
+        }
+
+        /// <summary>
+        /// We have decided to utilize database instead of more network coding.
+        /// Query the database, utilize the proper data file, then paste.
+        /// </summary>
+        /// <param name="args"></param>
+        public void Paste(CommandArgs args)
+        {
+            if (PointCheck(args))
+            {
 
             }
-            else return;
+            else args.Player.SendErrorMessage("You have not set both points.");
+        }
+
+        public void Undo(CommandArgs args)
+        {
+            if (PointCheck(args))
+            {
+
+            }
+            else args.Player.SendErrorMessage("You have not set both points.");
         }
 
         /// <summary>
@@ -171,14 +216,14 @@ namespace Tgo_WEdit
         /// </summary>
         /// <param name="args"></param>
         /// <returns></returns>
-        private (Point, Point) CorrectPoints(CommandArgs args)
+        private Tuple<Point, Point> CorrectPoints(CommandArgs args)
         {
             //min of both X, max of both Y = top left corner of a square.
             Point cP1 = new Point(Math.Min(args.Player.TempPoints[0].X, args.Player.TempPoints[1].X), Math.Max(args.Player.TempPoints[0].Y, args.Player.TempPoints[1].Y));
             //max of both X, min of both Y = bottom right corner of a square.
             Point cP2 = new Point(Math.Max(args.Player.TempPoints[0].X, args.Player.TempPoints[1].X), Math.Min(args.Player.TempPoints[0].Y, args.Player.TempPoints[1].Y));
 
-            return (cP1, cP2);
+            return new Tuple<Point, Point>(cP1, cP2);
         }
         #endregion
 
@@ -194,7 +239,7 @@ namespace Tgo_WEdit
             }
             catch (Exception e)
             {
-                TShock.Log.ConsoleError("TGOMOD Error on ExecuteQuery: " + e.Message);
+                TShock.Log.ConsoleError("TGOEDIT Error on ExecuteQuery: " + e.Message);
             }
         }
 
@@ -247,8 +292,7 @@ namespace Tgo_WEdit
                 results = ExecuteSelectQuery(query, colNames); // results[0] => List looks like: UID, NAME, etc. should be exactly 1 result.
                 int pk = int.Parse(results[0][0]); //should be UID
 
-                query = "INSERT INTO TGO_TILEDATA (UID, EID, TIMESTAMP, FILE_NAME) VALUES (" +
-                    pk + ", " + (1 + (int)data.editAction) + ", " + data.time.ToString("yyyy-MM-dd HH:mm:ss") + ", '" + data.fileName + "')";
+                query = "INSERT INTO TGO_TILEDATA (UID, EID, FILE_NAME) VALUES (" + pk + ", " + (1 + (int)data.editAction) + ", '" + data.fileName + "')";
                 ExecuteNoResultQuery(query);
             }
             catch (Exception e)
@@ -360,8 +404,7 @@ namespace Tgo_WEdit
                 this.editAction = editAction;
                 this.time = time;
                 tileIds = new List<ushort>();
-                //Referenced: https://www.c-sharpcorner.com/blogs/date-and-time-format-in-c-sharp-programming1
-                fileName = time.ToString("yyyy’-‘MM’-‘dd’T’HH’:’mm’:’ss.fffffffK"); //about as unique as it can get. any name problems will come from this
+                fileName = "TileEditData"+time.ToString().Replace('/', '-').Replace(' ', '-'); //Currently having issue with this.
                 //These will always be positive due to CorrectPoints.
                 length = p1.X - p2.X;
                 width = p1.Y - p2.Y;
